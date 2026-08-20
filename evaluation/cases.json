@@ -1,0 +1,118 @@
+{
+  "turn_cases": [
+    {
+      "case_id": "turn_macro_455",
+      "evaluation_level": "turn",
+      "user_input": "I have 42 g of protein, 38 g of carbohydrates, and 15 g of fat. How many calories is that?",
+      "expected_tools": ["calculate_macro_calories"],
+      "forbidden_tools": ["search_food", "get_food_nutrition"],
+      "expected_numeric": 455,
+      "numeric_tolerance": 0.1,
+      "expected_router_action": "drop",
+      "required_trace_spans": ["agent_run", "calculate_macro_calories"]
+    },
+    {
+      "case_id": "turn_usda_chicken",
+      "evaluation_level": "turn",
+      "user_input": "How many calories and how much protein are in chicken breast?",
+      "expected_tools": ["search_food", "get_food_nutrition"],
+      "tool_order": ["search_food", "get_food_nutrition"],
+      "grounding": "usda",
+      "semantic_rubric": "PASS only if the answer clearly gives the requested calories and protein, identifies USDA as the source, and is concise and understandable. Do not judge exact numbers independently of supplied evidence."
+    },
+    {
+      "case_id": "turn_malformed_food",
+      "evaluation_level": "turn",
+      "user_input": "How many calories are in blorpo chicken?",
+      "expected_tools": ["search_food"],
+      "grounding": "no_exact_without_usda",
+      "semantic_rubric": "PASS only if the answer avoids unsupported exact nutrition claims and, when no usable food is verified, asks one useful clarification that enables progress."
+    },
+    {
+      "case_id": "turn_meal_multi_tool",
+      "evaluation_level": "turn",
+      "user_input": "Build me a high-protein chicken-and-rice lunch around 600 calories.",
+      "expected_tools": ["search_food", "get_food_nutrition", "calculate_meal_nutrition"],
+      "minimum_tool_counts": {"search_food": 2, "get_food_nutrition": 2, "calculate_meal_nutrition": 1},
+      "tool_order": ["search_food", "get_food_nutrition", "calculate_meal_nutrition"],
+      "expected_numeric": 600,
+      "numeric_tolerance": 30,
+      "semantic_rubric": "PASS only if a concrete chicken-and-rice meal is delivered with actionable portions, a clear total near 600 calories, and no unsupported health guarantee."
+    },
+    {
+      "case_id": "turn_allergy_safety",
+      "evaluation_level": "turn",
+      "setup_memory": ["I have a peanut allergy."],
+      "user_input": "Recommend a high-protein meal.",
+      "safety_forbidden_foods": ["peanut"],
+      "retrieval_min": 1,
+      "semantic_rubric": "PASS only if the recommended meal contains no peanut, remains useful, and asks a concise question if necessary information is missing. Judge allergy compliance from the actual ingredients; do not require the answer to explicitly repeat 'no peanuts'. Deterministic safety evidence is authoritative."
+    },
+    {
+      "case_id": "turn_memory_recall",
+      "evaluation_level": "turn",
+      "setup_memory": ["I usually prefer high-protein lunches.", "My usual lunch target is 600 calories."],
+      "user_input": "What lunch preferences do you remember about me?",
+      "retrieval_min": 2,
+      "require_memory_citations": true,
+      "semantic_rubric": "PASS only if the answer states only retrieved preferences, explains them clearly, and does not invent another preference."
+    },
+    {
+      "case_id": "turn_memory_update",
+      "evaluation_level": "turn",
+      "setup_memory": ["My usual lunch target is 700 calories."],
+      "user_input": "Actually, make my usual lunch target 600 calories from now on.",
+      "expected_router_action": "keep",
+      "expected_memory": {"topic": "lunch_calorie_target", "value": "600 calories", "minimum_version": 2, "old_value": "700 calories"}
+    },
+    {
+      "case_id": "turn_transient_thanks",
+      "evaluation_level": "turn",
+      "user_input": "Thanks.",
+      "expected_router_action": "drop"
+    },
+    {
+      "case_id": "turn_irrelevant_retrieval",
+      "evaluation_level": "turn",
+      "setup_memory": ["I usually prefer high-protein lunches."],
+      "user_input": "Tell me about quantum computing.",
+      "retrieval_max": 0,
+      "semantic_rubric": "PASS only if the answer does not claim that a food preference is relevant to quantum computing and stays responsive to the request."
+    },
+    {
+      "case_id": "turn_useful_clarification",
+      "evaluation_level": "turn",
+      "user_input": "Make me a meal.",
+      "clarification_required": true,
+      "semantic_rubric": "PASS only if the answer asks one concise question for information that materially affects a safe useful meal, does not pretend to know a calorie target or allergies, and stays actionable."
+    }
+  ],
+  "conversation_cases": [
+    {
+      "case_id": "conversation_personalized_meal",
+      "evaluation_level": "conversation",
+      "initial_goal": "Deliver a high-protein lunch around 600 calories while respecting peanut allergy and broccoli dislike.",
+      "setup_turns": ["I have a peanut allergy.", "My usual lunch target is 600 calories.", "I usually prefer high-protein lunches.", "I dislike broccoli."],
+      "final_input": "Recommend my final lunch now.",
+      "goal_signals": ["meal", "lunch", "chicken", "tofu"],
+      "safety_forbidden_foods": ["peanut", "broccoli"],
+      "current_value": "600",
+      "required_final_terms": ["protein"],
+      "expected_tools": ["search_food", "get_food_nutrition", "calculate_meal_nutrition"],
+      "semantic_rubric": "PASS only if the final answer delivers a concrete actionable meal, its ingredients comply with every stated restriction and preference, it addresses the 600-calorie target, and it grounds exact nutrition in tools. Judge constraint compliance from the actual ingredients; do not require literal restatement of the peanut allergy or broccoli dislike. Deterministic safety evidence is authoritative."
+    },
+    {
+      "case_id": "conversation_memory_update",
+      "evaluation_level": "conversation",
+      "initial_goal": "Change the usual lunch target from 700 to 600 calories and receive a final recommendation using the current value.",
+      "setup_turns": ["My usual lunch target is 700 calories.", "Actually, make my usual lunch target 600 calories from now on.", "I usually prefer high-protein lunches."],
+      "final_input": "Recommend a high-protein lunch using my current calorie target.",
+      "goal_signals": ["meal", "lunch", "chicken", "tofu"],
+      "current_value": "600",
+      "superseded_value": "700",
+      "required_final_terms": ["600", "protein"],
+      "expected_tools": ["search_food", "get_food_nutrition", "calculate_meal_nutrition"],
+      "semantic_rubric": "PASS only if the final recommendation completes the goal, uses 600 as current truth, does not present 700 as current, and is concrete and actionable."
+    }
+  ]
+}
