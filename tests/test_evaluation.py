@@ -68,6 +68,51 @@ class EvaluatorFixtures(unittest.TestCase):
         self.assertFalse(verdict.passed)
         self.assertIn("numerically_grounded", verdict.failed_criteria)
 
+    def test_meal_target_contradiction_fails_hard_rule(self):
+        case = {"case_id": "meal_feasibility", "meal_target_feasibility": True}
+        tool_result = {
+            "tool": "calculate_meal_nutrition",
+            "status": "ok",
+            "final_target_met": False,
+            "target_status": "above_expanded_maximum",
+            "calorie_difference": -252.4,
+        }
+        verdict = evaluate_turn(
+            case,
+            run_fixture(
+                answer=(
+                    "### Meal plan\n### Totals\n"
+                    "This is very close to the target with a slight shortfall. "
+                    "Try cutting back on the rice portion."
+                ),
+                tool_results=[tool_result],
+            ),
+        )
+        self.assertFalse(verdict.passed)
+        self.assertIn("meal_target_feasibility", verdict.failed_criteria)
+
+    def test_meal_target_factual_failure_language_passes_hard_rule(self):
+        case = {"case_id": "meal_feasibility", "meal_target_feasibility": True}
+        tool_result = {
+            "tool": "calculate_meal_nutrition",
+            "status": "ok",
+            "final_target_met": False,
+            "target_status": "above_expanded_maximum",
+            "calorie_difference": -252.4,
+        }
+        verdict = evaluate_turn(
+            case,
+            run_fixture(
+                answer=(
+                    "### Meal plan\n### Totals\n"
+                    "The target cannot be reached under the current serving limits. "
+                    "The meal is 252.4 kcal below target; add another ingredient."
+                ),
+                tool_results=[tool_result],
+            ),
+        )
+        self.assertTrue(verdict.passed)
+
     def test_peanut_recommendation_fails(self):
         case = {"case_id": "unsafe", "safety_forbidden_foods": ["peanut"]}
         verdict = evaluate_turn(case, run_fixture(answer="Add peanut butter to the bowl."))

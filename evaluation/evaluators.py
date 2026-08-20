@@ -57,6 +57,83 @@ def _tool_order_passed(actual: list[str], required_order: list[str]) -> bool:
     return True
 
 
+def _meal_feasibility_passed(
+    answer: str,
+    tool_result: dict[str, Any] | None,
+) -> bool:
+    """Reject final text that contradicts deterministic meal feasibility."""
+    if not tool_result or tool_result.get("status") != "ok":
+        return False
+    final_target_met = tool_result.get("final_target_met")
+    if final_target_met not in {True, False}:
+        return False
+
+    lower = answer.lower()
+    subjective_success = re.search(
+        r"\b(?:very\s+close|close\s+to|slight\s+shortfall|nearly\s+"
+        r"(?:meets?|meeting)|approximately\s+(?:meets?|meeting)|"
+        r"meets?\s+the\s+target|target\s+(?:is\s+)?met)\b",
+        lower,
+    )
+    difference = tool_result.get("calorie_difference")
+    if isinstance(difference, bool) or not isinstance(difference, (int, float)):
+        return False
+    wrong_direction = False
+    if difference < 0:
+        wrong_direction = bool(
+            re.search(
+                r"\b(?:reduce|decrease|lower|cut(?:ting)?\s+back|use\s+less)\b"
+                r".{0,60}\b(?:portion|serving|ingredient|food|rice|chicken)\b",
+                lower,
+            )
+        )
+    elif difference > 0:
+        wrong_direction = bool(
+            re.search(
+                r"\b(?:increase|add\s+more|larger|raise)\b"
+                r".{0,60}\b(?:portion|serving|ingredient|food|rice|chicken)\b",
+                lower,
+            )
+        )
+
+    status = tool_result.get("target_status")
+    impossible_claim = bool(
+        re.search(r"\b(?:cannot be reached|unreachable|not achievable)\b", lower)
+    )
+    unmet_claim = bool(
+        re.search(
+            r"\b(?:target\s+(?:was|is)\s+not\s+met|remains\s+"
+            r"(?:below|above)\s+target)\b",
+            lower,
+        )
+    )
+    if final_target_met:
+        if impossible_claim or unmet_claim:
+            return False
+        if status == "met_expanded":
+            factual_status = "expanded" in lower or "above the preferred" in lower
+        elif status == "met_preferred":
+            factual_status = "expanded" not in lower
+        else:
+            factual_status = False
+    elif status == "above_expanded_maximum":
+        factual_status = impossible_claim and "below target" in lower
+    elif status == "below_preferred_minimum":
+        factual_status = "below the minimum" in lower and "above target" in lower
+    elif status == "closest_expanded":
+        factual_status = "expanded" in lower and (
+            "below target" in lower or "above target" in lower
+        )
+    else:
+        factual_status = (
+            "below target" in lower
+            or "above target" in lower
+            or "not met" in lower
+        )
+    contradictory_success = not final_target_met and bool(subjective_success)
+    return not contradictory_success and not wrong_direction and factual_status
+
+
 def evaluate_turn(
     case: dict[str, Any],
     run: EvalRunResult,
@@ -99,6 +176,41 @@ def evaluate_turn(
         tolerance = float(case.get("numeric_tolerance", 0.1))
         numeric_ok = _number_present(run.answer, expected_value, tolerance)
         criteria.append(_criterion("numerically_grounded", numeric_ok, "Expected numeric value appears within tolerance." if numeric_ok else "Expected numeric value is missing or wrong.", {"expected": expected_value, "tolerance": tolerance}))
+
+    if case.get("meal_target_feasibility"):
+        meal_results = [
+            item
+            for item in run.tool_results
+            if item.get("tool") == "calculate_meal_nutrition"
+        ]
+        meal_result = meal_results[0] if len(meal_results) == 1 else None
+        feasibility_ok = (
+            len(meal_results) == 1
+            and run.answer.count("### Meal plan") == 1
+            and run.answer.count("### Totals") == 1
+            and _meal_feasibility_passed(run.answer, meal_result)
+        )
+        criteria.append(
+            _criterion(
+                "meal_target_feasibility",
+                feasibility_ok,
+                (
+                    "Final text agrees with deterministic target feasibility."
+                    if feasibility_ok
+                    else "Final text contradicts or omits deterministic target feasibility."
+                ),
+                {
+                    "meal_tool_result_count": len(meal_results),
+                    "final_target_met": (
+                        meal_result.get("final_target_met") if meal_result else None
+                    ),
+                    "target_status": meal_result.get("target_status") if meal_result else None,
+                    "calorie_difference": (
+                        meal_result.get("calorie_difference") if meal_result else None
+                    ),
+                },
+            )
+        )
 
     grounding = case.get("grounding")
     if grounding:

@@ -155,11 +155,49 @@ class WebTests(unittest.TestCase):
         self.assertNotIn("localhost", html)
         self.assertNotIn("127.0.0.1", html)
 
+    def test_frontend_uses_safe_markdown_subset_renderer(self):
+        html = (ROOT / "static" / "index.html").read_text()
+        self.assertIn("function renderAnswer(markdownText)", html)
+        self.assertIn("renderAnswer(data.answer)", html)
+        self.assertIn("document.createElement('h3')", html)
+        self.assertIn("document.createTextNode", html)
+        self.assertIn("strong.textContent =", html)
+        self.assertNotIn("answer.textContent = data.answer", html)
+
+    def test_frontend_never_inserts_model_html(self):
+        html = (ROOT / "static" / "index.html").read_text()
+        self.assertNotRegex(html, r"\.innerHTML\s*=")
+        self.assertNotIn("insertAdjacentHTML", html)
+        self.assertNotIn("DOMParser", html)
+        self.assertIn("String(markdownText)", html)
+
+    def test_frontend_badges_use_only_fixed_safe_labels(self):
+        html = (ROOT / "static" / "index.html").read_text()
+        self.assertIn("renderBadges(data.tools_called, data.answer)", html)
+        self.assertIn("labels.push('USDA verified')", html)
+        self.assertIn("labels.push('Deterministic calculation')", html)
+        self.assertIn("labels.push('Expanded portion range')", html)
+        self.assertNotIn("JSON.stringify(data.tools_called)", html)
+        self.assertNotIn("tool_output", html)
+        self.assertNotIn("tool_arguments", html)
+
     def test_frontend_prevents_empty_and_duplicate_submission(self):
         html = (ROOT / "static" / "index.html").read_text()
-        self.assertIn("if (!message || send.disabled)", html)
+        self.assertIn("if (!message || requestInFlight)", html)
+        self.assertIn("requestInFlight = true", html)
+        self.assertIn("requestInFlight = false", html)
         self.assertIn("send.disabled = true", html)
+        self.assertIn("send.disabled = false", html)
+        self.assertEqual(html.count("form.addEventListener('submit'"), 1)
+        self.assertEqual(html.count("fetch('/chat'"), 1)
         self.assertIn("finally", html)
+
+    def test_frontend_replaces_one_answer_per_completed_request(self):
+        html = (ROOT / "static" / "index.html").read_text()
+        self.assertIn("answer.replaceChildren()", html)
+        self.assertIn("answer.classList.remove('visible')", html)
+        self.assertEqual(html.count("renderAnswer(data.answer)"), 1)
+        self.assertNotIn("answer.append(data.answer)", html)
 
     def test_env_remains_ignored(self):
         ignored = (ROOT / ".gitignore").read_text().splitlines()

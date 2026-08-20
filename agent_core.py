@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -18,12 +20,22 @@ from agent import create_agent
 from backend_config import resolve_long_term_memory_enabled
 from memory import RUN_CONFIG, create_session
 from observability import configure_local_tracing, summarize_query
+from presentation import format_meal_plan
 
 
 ROOT = Path(__file__).resolve().parent
 NUTRITION_SERVER = ROOT / "nutrition_mcp_server.py"
 REQUIRED_MCP_TOOLS = {"search_food", "get_food_nutrition"}
 MAX_TURNS = 12
+MEAL_TOOL_NAME = "calculate_meal_nutrition"
+MEAL_FORMAT_FAILURE = (
+    "Meal nutrition was calculated, but the structured result could not be "
+    "formatted safely. Please retry."
+)
+MEAL_ORCHESTRATION_FAILURE = (
+    "A single authoritative meal plan could not be produced because the meal "
+    "calculator ran more than once. Please retry."
+)
 
 
 class AgentAnswer(BaseModel):
@@ -45,11 +57,95 @@ class AgentCoreUnavailable(RuntimeError):
 def _tool_names(items: list[Any]) -> list[str]:
     names: list[str] = []
     for item in items:
+        name = getattr(item, "tool_name", None)
         raw = getattr(item, "raw_item", None)
-        name = getattr(raw, "name", None)
+        if name is None:
+            name = (
+                raw.get("name")
+                if isinstance(raw, Mapping)
+                else getattr(raw, "name", None)
+            )
         if name and name not in names:
             names.append(str(name))
     return names
+
+
+def _decode_tool_output(value: Any) -> dict[str, Any] | None:
+    """Decode only mapping or JSON-object tool outputs."""
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return dict(decoded) if isinstance(decoded, Mapping) else None
+    return None
+
+
+def _meal_tool_evidence(
+    items: list[Any],
+) -> tuple[int, int, dict[str, Any] | None, bool]:
+    """Return meal call counts, the sole output, and parse failure state."""
+    calls: dict[str, str] = {}
+    meal_call_count = 0
+    successful_count = 0
+    meal_output: dict[str, Any] | None = None
+    malformed = False
+
+    for item in items:
+        item_type = getattr(item, "type", None)
+        if item_type == "tool_call_item":
+            name = getattr(item, "tool_name", None)
+            call_id = getattr(item, "call_id", None)
+            if name and call_id:
+                calls[str(call_id)] = str(name)
+                if name == MEAL_TOOL_NAME:
+                    meal_call_count += 1
+        elif item_type == "tool_call_output_item":
+            call_id = getattr(item, "call_id", None)
+            if call_id and calls.get(str(call_id)) == MEAL_TOOL_NAME:
+                decoded = _decode_tool_output(getattr(item, "output", None))
+                if decoded is None:
+                    malformed = True
+                else:
+                    meal_output = decoded
+                    if decoded.get("status") == "ok":
+                        successful_count += 1
+
+    if meal_call_count and meal_output is None:
+        malformed = True
+    return meal_call_count, successful_count, meal_output, malformed
+
+
+def _authoritative_meal_output(
+    model_output: str,
+    items: list[Any],
+) -> tuple[str, dict[str, Any]]:
+    """Resolve one final response while treating a sole meal result as final."""
+    call_count, successful_count, meal_result, malformed = _meal_tool_evidence(items)
+    metadata = {
+        "meal_tool_call_count": call_count,
+        "successful_meal_tool_call_count": successful_count,
+        "orchestration_violation": call_count > 1,
+        "model_final_output_discarded": False,
+        "presentation_status": "model_output",
+    }
+    if call_count > 1:
+        metadata["presentation_status"] = "duplicate_meal_tool_calls"
+        metadata["model_final_output_discarded"] = True
+        return MEAL_ORCHESTRATION_FAILURE, metadata
+    if malformed:
+        metadata["presentation_status"] = "unsafe_tool_output"
+        metadata["model_final_output_discarded"] = True
+        return MEAL_FORMAT_FAILURE, metadata
+    if call_count == 1 and meal_result and meal_result.get("status") == "ok":
+        metadata["presentation_status"] = "formatted"
+        metadata["model_final_output_discarded"] = True
+        return format_meal_plan(meal_result), metadata
+    return model_output, metadata
 
 
 class CalorieChefService:
@@ -177,8 +273,37 @@ class CalorieChefService:
                         run_config=RUN_CONFIG,
                         max_turns=MAX_TURNS,
                     )
-                    output = str(result.final_output)
+                    model_output = str(result.final_output)
                     tools_called = _tool_names(result.new_items)
+                    try:
+                        output, presentation_data = _authoritative_meal_output(
+                            model_output,
+                            result.new_items,
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        output = MEAL_FORMAT_FAILURE
+                        presentation_data = {
+                            "meal_tool_call_count": 1,
+                            "successful_meal_tool_call_count": 1,
+                            "orchestration_violation": False,
+                            "model_final_output_discarded": True,
+                            "presentation_status": "invalid_tool_schema",
+                            "error_type": type(exc).__name__,
+                        }
+                    with custom_span(
+                        "meal_presentation",
+                        data=presentation_data,
+                    ) as presentation_span:
+                        if presentation_data["presentation_status"] not in {
+                            "formatted",
+                            "model_output",
+                        }:
+                            presentation_span.set_error(
+                                {
+                                    "message": "A safe authoritative meal response could not be produced.",
+                                    "data": {},
+                                }
+                            )
                 with custom_span(
                     "final_response",
                     data={"response_character_count": len(output)},

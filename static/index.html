@@ -35,8 +35,17 @@
     button:disabled { opacity: .55; cursor: wait; }
     #status { color: var(--muted); font-size: .92rem; }
     #status.error { color: #9a2f2f; }
-    #answer { display: none; margin-top: 20px; padding: 18px; border-radius: 14px; background: var(--soft); white-space: pre-wrap; line-height: 1.65; }
+    #answer { display: none; margin-top: 20px; }
     #answer.visible { display: block; }
+    .answer-content { padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--soft); line-height: 1.65; }
+    .answer-content h2, .answer-content h3 { margin: 22px 0 10px; color: var(--leaf-dark); font-family: Georgia, serif; line-height: 1.2; }
+    .answer-content h2:first-child, .answer-content h3:first-child { margin-top: 0; }
+    .answer-content p { margin: 10px 0; }
+    .answer-content ul { margin: 8px 0 16px; padding-left: 24px; }
+    .answer-content li { margin: 5px 0; }
+    .answer-content strong { color: #102e24; font-weight: 780; }
+    .answer-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .badge { display: inline-flex; align-items: center; min-height: 28px; padding: 5px 10px; border: 1px solid #b8cec3; border-radius: 999px; background: #f8fbf9; color: var(--leaf-dark); font-size: .78rem; font-weight: 750; letter-spacing: .01em; }
     .disclaimer { margin: 18px 2px 0; color: var(--muted); font-size: .82rem; line-height: 1.5; }
     @media (max-width: 520px) { main { padding: 34px 0; } .card { padding: 17px; } .actions { align-items: flex-start; flex-direction: column; } }
   </style>
@@ -68,16 +77,109 @@
     const status = document.querySelector('#status');
     const answer = document.querySelector('#answer');
     let threadId = localStorage.getItem('caloriechef_thread_id');
+    let requestInFlight = false;
+
+    function appendInlineBold(element, text) {
+      let cursor = 0;
+      while (cursor < text.length) {
+        const start = text.indexOf('**', cursor);
+        if (start === -1) {
+          element.appendChild(document.createTextNode(text.slice(cursor)));
+          return;
+        }
+        const end = text.indexOf('**', start + 2);
+        if (end === -1) {
+          element.appendChild(document.createTextNode(text.slice(cursor)));
+          return;
+        }
+        element.appendChild(document.createTextNode(text.slice(cursor, start)));
+        const strong = document.createElement('strong');
+        strong.textContent = text.slice(start + 2, end);
+        element.appendChild(strong);
+        cursor = end + 2;
+      }
+    }
+
+    function renderAnswer(markdownText) {
+      answer.replaceChildren();
+      const content = document.createElement('div');
+      content.className = 'answer-content';
+      let currentList = null;
+
+      for (const rawLine of String(markdownText).split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) {
+          currentList = null;
+          continue;
+        }
+        let element;
+        let inlineText;
+        if (line.startsWith('### ')) {
+          element = document.createElement('h3');
+          inlineText = line.slice(4);
+          currentList = null;
+        } else if (line.startsWith('## ')) {
+          element = document.createElement('h2');
+          inlineText = line.slice(3);
+          currentList = null;
+        } else if (line.startsWith('- ')) {
+          if (!currentList) {
+            currentList = document.createElement('ul');
+            content.appendChild(currentList);
+          }
+          element = document.createElement('li');
+          inlineText = line.slice(2);
+          appendInlineBold(element, inlineText);
+          currentList.appendChild(element);
+          continue;
+        } else {
+          element = document.createElement('p');
+          inlineText = line;
+          currentList = null;
+        }
+        appendInlineBold(element, inlineText);
+        content.appendChild(element);
+      }
+      answer.appendChild(content);
+    }
+
+    function renderBadges(toolsCalled, markdownText) {
+      const tools = new Set(Array.isArray(toolsCalled) ? toolsCalled : []);
+      const labels = [];
+      if (tools.has('search_food') && tools.has('get_food_nutrition')) {
+        labels.push('USDA verified');
+      }
+      if (tools.has('calculate_macro_calories') || tools.has('calculate_meal_nutrition')) {
+        labels.push('Deterministic calculation');
+      }
+      if (String(markdownText).includes('expanded portion')) {
+        labels.push('Expanded portion range');
+      }
+      if (!labels.length) return;
+      const badges = document.createElement('div');
+      badges.className = 'answer-badges';
+      badges.setAttribute('aria-label', 'Answer sources');
+      for (const label of labels) {
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = label;
+        badges.appendChild(badge);
+      }
+      answer.appendChild(badges);
+    }
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const message = input.value.trim();
-      if (!message || send.disabled) {
+      if (!message || requestInFlight) {
         status.textContent = 'Enter a message before sending.';
         status.className = 'error';
         return;
       }
+      requestInFlight = true;
       send.disabled = true;
+      answer.replaceChildren();
+      answer.classList.remove('visible');
       status.textContent = 'CalorieChef is working…';
       status.className = '';
       try {
@@ -92,13 +194,15 @@
         if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`);
         threadId = data.thread_id;
         localStorage.setItem('caloriechef_thread_id', threadId);
-        answer.textContent = data.answer;
+        renderAnswer(data.answer);
+        renderBadges(data.tools_called, data.answer);
         answer.classList.add('visible');
         status.textContent = `Ready · ${data.mode} · ${data.memory_mode} memory`;
       } catch (error) {
         status.textContent = `${error.message} Please retry or check service readiness.`;
         status.className = 'error';
       } finally {
+        requestInFlight = false;
         send.disabled = false;
         input.focus();
       }

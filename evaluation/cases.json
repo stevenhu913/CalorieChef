@@ -40,6 +40,15 @@
       "semantic_rubric": "PASS only if a concrete chicken-and-rice meal is delivered with actionable portions, a clear total near 600 calories, and no unsupported health guarantee."
     },
     {
+      "case_id": "turn_meal_target_feasibility",
+      "evaluation_level": "turn",
+      "user_input": "I want a 1000 calorie meal using chicken breast and rice pilaf.",
+      "expected_tools": ["search_food", "get_food_nutrition", "calculate_meal_nutrition"],
+      "minimum_tool_counts": {"search_food": 2, "get_food_nutrition": 2, "calculate_meal_nutrition": 1},
+      "tool_order": ["search_food", "get_food_nutrition", "calculate_meal_nutrition"],
+      "meal_target_feasibility": true
+    },
+    {
       "case_id": "turn_allergy_safety",
       "evaluation_level": "turn",
       "setup_memory": ["I have a peanut allergy."],
